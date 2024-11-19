@@ -93,8 +93,8 @@ username_field = driver.find_element(By.ID, 'id_username')
 password_field = driver.find_element(By.ID, 'id_password')
 
 # Giriş için kullanıcı adı ve şifre
-username = 'betlet_'  # Kendi kullanıcı adınızı buraya yazın
-password = 'ssEE78nm.'  # Kendi şifrenizi buraya yazın
+username = ''  # Kendi kullanıcı adınızı buraya yazın
+password = ''  # Kendi şifrenizi buraya yazın
 username_field.send_keys(username)  # Kullanıcı adını girme
 password_field.send_keys(password)  # Şifreyi girme
 # Giriş formunu gönderin
