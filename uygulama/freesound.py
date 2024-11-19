@@ -1,14 +1,42 @@
-from selenium import webdriver
-from selenium.common import TimeoutException, StaleElementReferenceException
-from selenium.webdriver import Keys
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-import time
+import io
 import os
 import requests
-from webdriver_manager.chrome import ChromeDriverManager
+from selenium import webdriver
+from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+from selenium.webdriver.common.keys import Keys
+from webdriver_manager.chrome import ChromeDriverManager
+import time
+
+# Google Drive API için ayarlar
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
+SERVICE_ACCOUNT_FILE = 'service_account.json'  # JSON dosyanızın adı
+FOLDER_ID = '13t9QvPmNiUe-fcdriNDRfSOX2b2gAv-_'  # Yüklemek istediğiniz klasörün ID'si
+
+# Yetkilendirme Bilgilerini Ayarla
+credentials = service_account.Credentials.from_service_account_file(
+    SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+
+# Google Drive Servisini Başlat
+service = build('drive', 'v3', credentials=credentials)
+
+# Google Drive'a dosya yükleme fonksiyonu
+def upload_file(file_stream, file_name):
+    file_metadata = {
+        'name': file_name,
+        'parents': [FOLDER_ID]  # Yüklemek istediğiniz klasörün ID'si
+    }
+
+    media = MediaIoBaseUpload(file_stream, mimetype='audio/wav')
+
+    # Dosyayı yükle
+    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    print(f"Dosya yüklendi: {file_name} (ID: {file['id']})")
 
 # Çerezler ve başlıklar
 cookies = {
@@ -26,24 +54,22 @@ headers = {
 }
 
 # İndirme işlemi fonksiyonu
-def download_file(url, cookies, headers, download_folder="sesdosyalari"):
+def download_file(url, cookies, headers):
     file_name = url.split("/")[-1]
-    file_path = os.path.join(download_folder, file_name)
-
-    response = requests.get(url, cookies=cookies, headers=headers, stream=True)
     try:
+        # Dosyayı belleğe indir
+        response = requests.get(url, cookies=cookies, headers=headers, stream=True)
         if response.status_code == 200:
-            with open(file_path, 'wb') as f:
-                try:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                    print(f"Dosya indirildi: {file_path}")
-                except TimeoutException:
-                    print("kaldı mı.")
+            file_stream = io.BytesIO(response.content)
+            print(f"Dosya belleğe indirildi: {file_name}")
+
+            # Google Drive'a yükle
+            upload_file(file_stream, file_name)
         else:
             print(f"İndirme başarısız oldu: {response.status_code}")
-    except TimeoutException:
-        print("kaldı mı.")
+    except Exception as e:
+        print(f"İndirme hatası: {e}")
+
 
 # Tarayıcıyı başlatma
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
@@ -80,8 +106,8 @@ try:
         EC.url_changes('https://freesound.org/')
     )
     print("Giriş başarıyla tamamlandı!")
-except TimeoutException:
-    print("Giriş işlemi zaman aşımına uğradı.")
+except Exception as e:
+    print(f"Giriş işlemi başarısız: {e}")
 
 # Sayfalar arasında gezinme ve şarkı linklerini indirme
 def scrape_sounds():
@@ -90,34 +116,23 @@ def scrape_sounds():
         driver.get(f'https://freesound.org/search/?q=music&f=type%3A%22wav%22&page={page}#sound')
         time.sleep(2)
 
-        # Sayfada ses linklerini bulma
+        # Sayfada ses linklerini bulma ve URL'leri listeye ekleme
         sound_links = driver.find_elements(By.XPATH, '//a[contains(@class, "bw-link--black") and starts-with(@href, "/people/")]')
+        sound_urls = [link.get_attribute("href") for link in sound_links if link.get_attribute("href")]
+        print(f"{len(sound_urls)} adet ses linki bulundu.")
 
-        if not sound_links:
-            print("Hiç ses linki bulunamadı.")
+        if len(sound_urls) <= 1:
+            print("Yeterli ses linki yok. Devam ediliyor...")
             continue
 
-        print(f"{len(sound_links)} adet ses linki bulundu.")
-
-        for index, link in enumerate(sound_links):
-            if index == 0:  # İlk linki atla
-                print("İlk link atlanıyor.")
-                continue
-
+        for index, sound_page_url in enumerate(sound_urls[1:], start=2):  # İlk linki atlamak için [1:] kullanıldı
             try:
-                # Sayfa URL'sini al
-                sound_page_url = link.get_attribute("href")
-                print(f"Detay sayfasına gidiliyor: {sound_page_url}")
-
-                if not sound_page_url:
-                    print("Geçersiz URL, atlanıyor.")
-                    continue
-
+                print(f"{index}. linke gidiliyor: {sound_page_url}")
                 driver.get(sound_page_url)
                 time.sleep(2)
 
                 # İndirme butonunu bekleyin
-                download_button = WebDriverWait(driver, 20).until(
+                download_button = WebDriverWait(driver, 30).until(
                     EC.presence_of_element_located(
                         (By.XPATH, '//a[contains(@class, "sound-download-button") and @href]')
                     )
@@ -126,19 +141,17 @@ def scrape_sounds():
 
                 # İndirme URL'sini al
                 download_url = download_button.get_attribute("href")
-                if download_url.endswith(".wav"):
-                    download_file(download_url, cookies, headers)
-                else:
-                    print(f"Atlanıyor: {download_url}")
+                if not download_url or not download_url.endswith(".wav"):
+                    print(f"Geçersiz indirme linki: {download_url}")
+                    continue
 
-            except TimeoutException:
-                print("İndirme butonu bulunamadı, sonraki öğeye geçiliyor.")
-            except StaleElementReferenceException:
-                print("Stale element hatası, öğe yeniden bulunuyor.")
+                # Dosyayı indirin
+                download_file(download_url, cookies, headers)
             except Exception as e:
-                print(f"Beklenmedik bir hata oluştu: {e}")
+                print(f"Hata oluştu: {e}. İşleme devam ediliyor...")
 
         print(f"Sayfa {page} işlem tamamlandı.")
+
 
 # İndirme işlemini başlat
 scrape_sounds()
